@@ -300,7 +300,20 @@ function evaluateAlerts(stationId, data) {
 }
 
 function saveReading(stationId, data) {
-  insertReading.run({ station_id: stationId, online: data.online ? 1 : 0, ...data });
+  const n = v => (v === undefined ? null : v);
+  insertReading.run({
+    station_id: stationId,
+    online: data.online ? 1 : 0,
+    temp: n(data.temp), hum: n(data.hum),
+    rain_today: n(data.rain_today), rain_month: n(data.rain_month),
+    rain_year: n(data.rain_year), rain_rate: n(data.rain_rate),
+    pres: n(data.pres), pres_trend: n(data.pres_trend),
+    wind_gust: n(data.wind_gust), wind_avg: n(data.wind_avg),
+    wind_dir: n(data.wind_dir), wind_dir_str: n(data.wind_dir_str),
+    wind_beaufort: n(data.wind_beaufort), dew_point: n(data.dew_point),
+    heat_index: n(data.heat_index), apparent_temp: n(data.apparent_temp),
+    feels_like: n(data.feels_like), updated_str: n(data.updated_str),
+  });
   evaluateAlerts(stationId, data);
 }
 
