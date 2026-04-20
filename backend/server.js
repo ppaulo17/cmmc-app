@@ -147,77 +147,97 @@ function parseCumulusHTML(html) {
   return d;
 }
 
-// ─── Parser de todo.php (una sola URL con todas las estaciones) ──────────────
+// ─── Parser de todo.php ─────────────────────────────────────────────────────
 function parseTodoPHP(html) {
-  // Mapeo nombre en todo.php -> id en nuestra DB
   const nameMap = {
     'sgto. cabral': 'Sgto_Cabral',
     'candioti n': 'Candioti_Norte',
     'fiq1 (telemática)': 'FIQ',
+    'fiq1 (telematica)': 'FIQ',
     'fiq1 (directo)': 'FIQ',
     'fiq2': 'FIQ',
     'eis': 'EIS',
-    'sur': null,
-    'colastine n 1': null,
+    'san cristobal': 'SanCris',
+    'san cristóbal': 'SanCris',
+    'gral. lagos': null,
     'arroyo leyes': null,
-    'movil': null,
-    'recreo': null,
-    'santo tomé': null,
-    'coronda': null,
+    'colastine n 1': null,
     'laguna paiva': null,
     'san justo': null,
     'tostado': null,
     'arrufó': null,
-    'san cristobal': 'SanCris',
+    'arrufo': null,
+    'recreo': null,
+    'santo tomé': null,
+    'santo tome': null,
+    'coronda': null,
+    'movil': null,
+    'sur': null,
     'arteaga': null,
-    'gral. lagos': null,
   };
 
   const results = {};
-  const t = html.replace(/,/g, '.');
 
-  // Parser de bloques separados por ---
-  console.log('[DEBUG] HTML length:', html.length, 'preview:', html.slice(0,300).replace(/\n/g,'|'));
-  const blocks = t.split("---");
-  console.log('[DEBUG] blocks found:', blocks.length);
+  // Quitar tags HTML y normalizar
+  let text = html.replace(/<[^>]+>/g, '\n');
+  text = text.replace(/,/g, '.');
+  text = text.replace(/\r/g, '');
+  text = text.replace(/\n{3,}/g, '\n\n');
+
+  // Split por líneas dobles (donde estaban los <hr>)
+  const blocks = text.split(/\n\n+/);
+
   blocks.forEach(block => {
-    const nameMatch = block.match(/^([^\n:]+):/m);
-    if (!nameMatch) return;
-    const rawName = nameMatch[1].trim().toLowerCase();
-    const stationId = nameMap[rawName];
-    if (!stationId) return;
-    if (results[stationId]) return; // ya lo tenemos
+    block = block.trim();
+    if (!block || block.length < 3) return;
 
-    if (block.includes('OFF-LINE')) {
+    const nameMatch = block.match(/^([^\n:]{2,40}):/m);
+    if (!nameMatch) return;
+
+    const rawName = nameMatch[1].trim().toLowerCase()
+      .replace(/[áà]/g, 'a').replace(/[éè]/g, 'e')
+      .replace(/[íì]/g, 'i').replace(/[óò]/g, 'o')
+      .replace(/[úù]/g, 'u').replace(/ñ/g, 'n');
+
+    // Buscar en nameMap con nombre original y normalizado
+    let stationId = nameMap[nameMatch[1].trim().toLowerCase()];
+    if (stationId === undefined) stationId = nameMap[rawName];
+    if (stationId === undefined) return;
+    if (stationId === null) return;
+    if (results[stationId]) return;
+
+    if (block.includes('OFF-LINE') || block.includes('OFF LINE')) {
       results[stationId] = { online: false };
       return;
     }
 
-    const horaMatch = block.match(/Hora:\s*(.+)/i);
-    const tMatch = block.match(/T:\s*([\d.]+)°C/i);
-    const hMatch = block.match(/H:\s*(\d+)%/i);
-    const pMatch = block.match(/P:\s*([\d.]+)hPa/i);
-    const rMatch = block.match(/Lluvia:\s*([\d.]+)mm/i);
-    const wMatch = block.match(/Viento:\s*(\d+)°\s*(\S+)\s*([\d.]+)\s*km\/h,([\d.]+)/i);
+    const tMatch  = block.match(/T:\s*([\d.]+)/i);
+    const hMatch  = block.match(/H:\s*(\d+)/i);
+    const pMatch  = block.match(/P:\s*([\d.]+)hPa/i);
+    const rMatch  = block.match(/Lluvia:\s*([\d.]+)/i);
+    const wMatch  = block.match(/Viento:\s*(\d+)°\s*(\S+)\s*([\d.]+)\s*km\/h.([\d.]+)/i);
+    const horaM   = block.match(/Hora:\s*(.+)/i);
 
     if (!tMatch) return;
 
     results[stationId] = {
       online: true,
-      temp: parseFloat(tMatch[1]),
-      hum: hMatch ? parseInt(hMatch[1]) : null,
-      pres: pMatch ? parseFloat(pMatch[1]) : null,
-      rain_today: rMatch ? parseFloat(rMatch[1]) : null,
-      wind_gust: wMatch ? parseFloat(wMatch[3]) : null,
-      wind_avg: wMatch ? parseFloat(wMatch[4]) : null,
-      wind_dir: wMatch ? parseInt(wMatch[1]) : null,
-      wind_dir_str: wMatch ? wMatch[2] : null,
-      updated_str: horaMatch ? horaMatch[1].trim() : null,
+      temp:         parseFloat(tMatch[1]),
+      hum:          hMatch  ? parseInt(hMatch[1])    : null,
+      pres:         pMatch  ? parseFloat(pMatch[1])  : null,
+      rain_today:   rMatch  ? parseFloat(rMatch[1])  : null,
+      wind_gust:    wMatch  ? parseFloat(wMatch[3])  : null,
+      wind_avg:     wMatch  ? parseFloat(wMatch[4])  : null,
+      wind_dir:     wMatch  ? parseInt(wMatch[1])    : null,
+      wind_dir_str: wMatch  ? wMatch[2]              : null,
+      updated_str:  horaM   ? horaM[1].trim()        : null,
     };
+    console.log(`[${stationId}] parsed: ${results[stationId].temp}°C`);
   });
 
   return results;
 }
+
 
 // ─── Scraping desde todo.php ──────────────────────────────────────────────────
 async function updateAllStations() {
