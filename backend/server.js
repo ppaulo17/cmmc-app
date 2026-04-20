@@ -177,7 +177,9 @@ function parseTodoPHP(html) {
   const t = html.replace(/,/g, '.');
 
   // Parser de bloques separados por ---
+  console.log('[DEBUG] HTML length:', html.length, 'preview:', html.slice(0,300).replace(/\n/g,'|'));
   const blocks = t.split("---");
+  console.log('[DEBUG] blocks found:', blocks.length);
   blocks.forEach(block => {
     const nameMatch = block.match(/^([^\n:]+):/m);
     if (!nameMatch) return;
