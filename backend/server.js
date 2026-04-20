@@ -147,45 +147,116 @@ function parseCumulusHTML(html) {
   return d;
 }
 
-// ─── Scraping directo desde Railway ─────────────────────────────────────────
-async function scrapeStation(station) {
-  const attempts = [
-    station.url,
-    station.url.replace('www.', ''),
-  ];
-  for (const url of attempts) {
-    for (let i = 0; i < 2; i++) {
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 20000);
-        const res = await fetch(url, {
-          signal: controller.signal,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (compatible; CMMC-Monitor/1.0)',
-            'Accept': 'text/html,application/xhtml+xml',
-            'Accept-Language': 'es-AR,es;q=0.9',
-          }
-        });
-        clearTimeout(timeout);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const html = await res.text();
-        const parsed = parseCumulusHTML(html);
-        if (parsed.online) {
-          console.log(`[${station.id}] OK: ${parsed.temp}°C`);
-          return parsed;
-        }
-        console.log(`[${station.id}] HTML obtenido pero sin datos`);
-      } catch (err) {
-        console.log(`[${station.id}] intento ${i+1} fallido: ${err.message}`);
-        if (i === 0) await new Promise(r => setTimeout(r, 2000));
-      }
+// ─── Parser de todo.php (una sola URL con todas las estaciones) ──────────────
+function parseTodoPHP(html) {
+  // Mapeo nombre en todo.php -> id en nuestra DB
+  const nameMap = {
+    'sgto. cabral': 'Sgto_Cabral',
+    'candioti n': 'Candioti_Norte',
+    'fiq1 (telemática)': 'FIQ',
+    'fiq1 (directo)': 'FIQ',
+    'fiq2': 'FIQ',
+    'eis': 'EIS',
+    'sur': null,
+    'colastine n 1': null,
+    'arroyo leyes': null,
+    'movil': null,
+    'recreo': null,
+    'santo tomé': null,
+    'coronda': null,
+    'laguna paiva': null,
+    'san justo': null,
+    'tostado': null,
+    'arrufó': null,
+    'san cristobal': 'SanCris',
+    'arteaga': null,
+    'gral. lagos': null,
+  };
+
+  const results = {};
+  const t = html.replace(/,/g, '.');
+
+  // Parser de bloques separados por ---
+  const blocks = t.split("---");
+  blocks.forEach(block => {
+    const nameMatch = block.match(/^([^\n:]+):/m);
+    if (!nameMatch) return;
+    const rawName = nameMatch[1].trim().toLowerCase();
+    const stationId = nameMap[rawName];
+    if (!stationId) return;
+    if (results[stationId]) return; // ya lo tenemos
+
+    if (block.includes('OFF-LINE')) {
+      results[stationId] = { online: false };
+      return;
     }
-  }
-  return { online: false };
+
+    const horaMatch = block.match(/Hora:\s*(.+)/i);
+    const tMatch = block.match(/T:\s*([\d.]+)°C/i);
+    const hMatch = block.match(/H:\s*(\d+)%/i);
+    const pMatch = block.match(/P:\s*([\d.]+)hPa/i);
+    const rMatch = block.match(/Lluvia:\s*([\d.]+)mm/i);
+    const wMatch = block.match(/Viento:\s*(\d+)°\s*(\S+)\s*([\d.]+)\s*km\/h,([\d.]+)/i);
+
+    if (!tMatch) return;
+
+    results[stationId] = {
+      online: true,
+      temp: parseFloat(tMatch[1]),
+      hum: hMatch ? parseInt(hMatch[1]) : null,
+      pres: pMatch ? parseFloat(pMatch[1]) : null,
+      rain_today: rMatch ? parseFloat(rMatch[1]) : null,
+      wind_gust: wMatch ? parseFloat(wMatch[3]) : null,
+      wind_avg: wMatch ? parseFloat(wMatch[4]) : null,
+      wind_dir: wMatch ? parseInt(wMatch[1]) : null,
+      wind_dir_str: wMatch ? wMatch[2] : null,
+      updated_str: horaMatch ? horaMatch[1].trim() : null,
+    };
+  });
+
+  return results;
 }
 
+// ─── Scraping desde todo.php ──────────────────────────────────────────────────
+async function updateAllStations() {
+  if (isFetching) return;
+  isFetching = true;
+  console.log(`[${new Date().toISOString()}] Actualizando desde todo.php...`);
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    const res = await fetch('https://cmmcsat.net.ar/todo.php', {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CMMC-Monitor/1.0)' }
+    });
+    clearTimeout(timeout);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+    const parsed = parseTodoPHP(html);
 
-// ─── Guardar lectura y evaluar alertas ──────────────────────────────────────
+    // Guardar lecturas de las estaciones que pudimos parsear
+    Object.entries(parsed).forEach(([stationId, data]) => {
+      try {
+        saveReading(stationId, data);
+        if (data.online) console.log(`[${stationId}] OK: ${data.temp}°C`);
+      } catch(e) { console.log(`[${stationId}] save error:`, e.message); }
+    });
+
+    // Estaciones no encontradas en todo.php -> marcar offline
+    const allStations = db.prepare('SELECT id FROM stations WHERE active=1').all();
+    allStations.forEach(s => {
+      if (!parsed[s.id]) saveReading(s.id, { online: false });
+    });
+
+    lastFetchTime = new Date().toISOString();
+    console.log(`[${lastFetchTime}] Actualización completa. ${Object.keys(parsed).length} estaciones.`);
+  } catch(err) {
+    console.log('Error actualizando:', err.message);
+  }
+  isFetching = false;
+}
+
+// ─── Guardar lectura// ─── Guardar lectura y evaluar alertas ──────────────────────────────────────
 const insertReading = db.prepare(`
   INSERT INTO readings (
     station_id, temp, hum, rain_today, rain_month, rain_year, rain_rate,
@@ -237,21 +308,6 @@ function saveReading(stationId, data) {
 let lastFetchTime = null;
 let isFetching = false;
 
-async function updateAllStations() {
-  if (isFetching) return;
-  isFetching = true;
-  console.log(`[${new Date().toISOString()}] Actualizando estaciones...`);
-  const stations = db.prepare('SELECT * FROM stations WHERE active = 1').all();
-  await Promise.allSettled(
-    stations.map(async s => {
-      const data = await scrapeStation(s);
-      saveReading(s.id, data);
-    })
-  );
-  lastFetchTime = new Date().toISOString();
-  isFetching = false;
-  console.log(`[${lastFetchTime}] Actualización completa.`);
-}
 
 // Cada 5 minutos (igual que la frecuencia de Cumulus)
 cron.schedule('*/5 * * * *', updateAllStations);
