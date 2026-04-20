@@ -346,6 +346,35 @@ app.get('/api/compare', (req, res) => {
   res.json({ reference: ref, stations: result });
 });
 
+// POST /api/push-readings — recibir datos scrapeados desde el frontend
+app.post('/api/push-readings', (req, res) => {
+  const readings = req.body;
+  if (!Array.isArray(readings)) return res.status(400).json({ error: 'Array esperado' });
+  let saved = 0;
+  readings.forEach(data => {
+    if (!data.station_id) return;
+    try {
+      insertReading.run({
+        station_id: data.station_id,
+        temp: data.temp ?? null, hum: data.hum ?? null,
+        rain_today: data.rain_today ?? null, rain_month: data.rain_month ?? null,
+        rain_year: data.rain_year ?? null, rain_rate: data.rain_rate ?? null,
+        pres: data.pres ?? null, pres_trend: data.pres_trend ?? null,
+        wind_gust: data.wind_gust ?? null, wind_avg: data.wind_avg ?? null,
+        wind_dir: data.wind_dir ?? null, wind_dir_str: data.wind_dir_str ?? null,
+        wind_beaufort: data.wind_beaufort ?? null, dew_point: data.dew_point ?? null,
+        heat_index: data.heat_index ?? null, apparent_temp: data.apparent_temp ?? null,
+        feels_like: data.feels_like ?? null, updated_str: data.updated_str ?? null,
+        online: data.online ? 1 : 0
+      });
+      evaluateAlerts(data.station_id, data);
+      saved++;
+    } catch(e) { console.log('push-readings error:', e.message); }
+  });
+  lastFetchTime = new Date().toISOString();
+  res.json({ saved });
+});
+
 // POST /api/refresh — forzar actualización manual
 app.post('/api/refresh', async (req, res) => {
   res.json({ message: 'Actualización iniciada' });

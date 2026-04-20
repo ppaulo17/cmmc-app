@@ -432,7 +432,7 @@ textarea { resize: vertical; min-height: 70px; }
 // ⚠️  CAMBIÁ ESTA URL por la de tu backend en Railway antes de subir a Netlify
 // Ejemplo: 'https://cmmc-backend-production-xxxx.up.railway.app/api'
 // Para desarrollo local dejala como está:
-const API = 'cmmc-app-production.up.railway.app/api';
+const API = 'http://localhost:3001/api';
 let allReadings = [];
 let histChart = null;
 let activeTab = 'red';
@@ -449,17 +449,80 @@ function goTab(name, btn) {
   if (name === 'alertas') renderAlerts();
 }
 
+// ─── Scraping desde el navegador ─────────────────────────────────────────────
+function parseCumulusHTML(html) {
+  const d = {};
+  const t = html.replace(/(\d),(\d)/g, '$1.$2');
+  const ex = (pat, fn = v => parseFloat(v)) => { const m = t.match(pat); return m ? fn(m[1]) : null; };
+  d.temp        = ex(/Temperatura\s*\|\s*([\d.]+)\s*°C/i);
+  d.hum         = ex(/Humedad\s*\|\s*(\d+)\s*%/i, v => parseInt(v));
+  d.rain_today  = ex(/Precipitaci[oó]n hoy\s*\|\s*([\d.]+)\s*mm/i);
+  d.rain_month  = ex(/Precipitaciones este mes\s*\|\s*([\d.]+)\s*mm/i);
+  d.rain_year   = ex(/Precipitaciones este a[ñn]o\s*\|\s*([\d.]+)\s*mm/i);
+  d.rain_rate   = ex(/Tasa de precipitaci[oó]n actual\s*\|\s*([\d.]+)\s*mm/i);
+  d.pres        = ex(/Bar[oó]metro\s*\|\s*([\d.]+)\s*hPa/i);
+  d.wind_gust   = ex(/Velocidad de viento \(R[aá]faga\)\s*\|\s*([\d.]+)\s*km\/h/i);
+  d.wind_avg    = ex(/Velocidad de viento\(Prom 10 min\)\s*\|\s*([\d.]+)\s*km\/h/i);
+  d.dew_point   = ex(/Punto de roc[ií]o\s*\|\s*([\d.]+)\s*°C/i);
+  d.heat_index  = ex(/[Íi]ndice de calor\s*\|\s*([\d.]+)\s*°C/i);
+  d.feels_like  = ex(/Sensaci[oó]n t[eé]rmica\s*\|\s*([\d.]+)\s*°C/i);
+  d.apparent_temp = ex(/Temperatura aparente\s*\|\s*([\d.]+)\s*°C/i);
+  const wd = t.match(/Direcci[oó]n del viento\s*\|\s*(\d+)°\s*(\S+)/i);
+  if (wd) { d.wind_dir = parseInt(wd[1]); d.wind_dir_str = wd[2]; }
+  const bf = t.match(/Beaufort\s+F(\d)\s*\|\s*(.+?)(?:\n|\|)/i);
+  if (bf) d.wind_beaufort = `F${bf[1]} ${bf[2].trim()}`;
+  const pt = t.match(/Bar[oó]metro\s*\|[^|]+\|\s*([A-Za-záéíóú ]+)/i);
+  if (pt) d.pres_trend = pt[1].trim().slice(0,30);
+  const upd = t.match(/Condiciones a la hora local:\s*(.+?)(?:\n|$)/i);
+  if (upd) d.updated_str = upd[1].trim();
+  d.online = d.temp !== null;
+  return d;
+}
+
+async function scrapeFromBrowser(url) {
+  try {
+    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    const res = await fetch(proxy);
+    if (!res.ok) return null;
+    const json = await res.json();
+    return parseCumulusHTML(json.contents || '');
+  } catch(e) { return null; }
+}
+
+async function pushReadings(readings) {
+  try {
+    await fetch(`${API}/push-readings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(readings)
+    });
+  } catch(e) {}
+}
+
 // ─── Fetch datos ─────────────────────────────────────────────────────────────
 async function loadData() {
   setStatus('loading');
   try {
-    const [stationsRes, alertsRes] = await Promise.all([
-      fetch(`${API}/readings/latest`),
-      fetch(`${API}/alerts`)
-    ]);
-    allReadings = await stationsRes.json();
-    const alerts = await alertsRes.json();
-    window._alerts = alerts;
+    const stationsRes = await fetch(`${API}/stations`);
+    const stationsData = await stationsRes.json();
+    const stations = stationsData.stations || [];
+
+    document.getElementById('lastUpdate').textContent = 'Conectando con estaciones...';
+
+    const results = await Promise.allSettled(
+      stations.map(async s => {
+        const data = await scrapeFromBrowser(s.url);
+        return { station_id: s.id, name: s.name, city: s.city, lat: s.lat, lng: s.lng,
+                 is_reference: s.is_reference, url: s.url, model: s.model,
+                 ...(data || { online: false }) };
+      })
+    );
+
+    allReadings = results.map(r => r.status === 'fulfilled' ? r.value : { online: false });
+    pushReadings(allReadings);
+
+    const alertsRes = await fetch(`${API}/alerts`);
+    window._alerts = await alertsRes.json();
 
     setStatus('ok');
     const now = new Date();
@@ -473,7 +536,7 @@ async function loadData() {
     if (activeTab === 'alertas') renderAlerts();
   } catch(e) {
     setStatus('error');
-    document.getElementById('lastUpdate').textContent = 'Error al conectar con el backend — asegurate de que esté corriendo en :3001';
+    document.getElementById('lastUpdate').textContent = 'Error al conectar con el backend';
   }
 }
 
