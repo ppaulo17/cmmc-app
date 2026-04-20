@@ -147,39 +147,43 @@ function parseCumulusHTML(html) {
   return d;
 }
 
-// ─── Scraping de una estación (con proxy para evitar bloqueos en Railway) ────
+// ─── Scraping directo desde Railway ─────────────────────────────────────────
 async function scrapeStation(station) {
-  const proxies = [
-    `https://api.allorigins.win/get?url=${encodeURIComponent(station.url)}`,
-    `https://corsproxy.io/?${encodeURIComponent(station.url)}`,
+  const attempts = [
+    station.url,
+    station.url.replace('www.', ''),
   ];
-  for (const proxyUrl of proxies) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-      const res = await fetch(proxyUrl, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (!res.ok) continue;
-      const json = await res.json().catch(() => null);
-      const html = json ? (json.contents || "") : await res.text();
-      if (!html || html.length < 100) continue;
-      const parsed = parseCumulusHTML(html);
-      if (parsed.online) { console.log(`[${station.id}] OK via proxy`); return parsed; }
-    } catch (err) {
-      console.log(`[${station.id}] Proxy error: ${err.message}`);
+  for (const url of attempts) {
+    for (let i = 0; i < 2; i++) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 20000);
+        const res = await fetch(url, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; CMMC-Monitor/1.0)',
+            'Accept': 'text/html,application/xhtml+xml',
+            'Accept-Language': 'es-AR,es;q=0.9',
+          }
+        });
+        clearTimeout(timeout);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const html = await res.text();
+        const parsed = parseCumulusHTML(html);
+        if (parsed.online) {
+          console.log(`[${station.id}] OK: ${parsed.temp}°C`);
+          return parsed;
+        }
+        console.log(`[${station.id}] HTML obtenido pero sin datos`);
+      } catch (err) {
+        console.log(`[${station.id}] intento ${i+1} fallido: ${err.message}`);
+        if (i === 0) await new Promise(r => setTimeout(r, 2000));
+      }
     }
-  }
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
-    const res = await fetch(station.url, { signal: controller.signal, headers: { "User-Agent": "CMMC-Monitor/1.0" } });
-    clearTimeout(timeout);
-    if (res.ok) return parseCumulusHTML(await res.text());
-  } catch (err) {
-    console.log(`[${station.id}] Direct error: ${err.message}`);
   }
   return { online: false };
 }
+
 
 // ─── Guardar lectura y evaluar alertas ──────────────────────────────────────
 const insertReading = db.prepare(`

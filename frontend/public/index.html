@@ -449,34 +449,29 @@ function goTab(name, btn) {
   if (name === 'alertas') renderAlerts();
 }
 
-// ─── Scraping desde el navegador ─────────────────────────────────────────────
-function parseCumulusHTML(html) {
-  const d = {};
-  const t = html.replace(/(\d),(\d)/g, '$1.$2');
-  const ex = (pat, fn = v => parseFloat(v)) => { const m = t.match(pat); return m ? fn(m[1]) : null; };
-  d.temp        = ex(/Temperatura\s*\|\s*([\d.]+)\s*°C/i);
-  d.hum         = ex(/Humedad\s*\|\s*(\d+)\s*%/i, v => parseInt(v));
-  d.rain_today  = ex(/Precipitaci[oó]n hoy\s*\|\s*([\d.]+)\s*mm/i);
-  d.rain_month  = ex(/Precipitaciones este mes\s*\|\s*([\d.]+)\s*mm/i);
-  d.rain_year   = ex(/Precipitaciones este a[ñn]o\s*\|\s*([\d.]+)\s*mm/i);
-  d.rain_rate   = ex(/Tasa de precipitaci[oó]n actual\s*\|\s*([\d.]+)\s*mm/i);
-  d.pres        = ex(/Bar[oó]metro\s*\|\s*([\d.]+)\s*hPa/i);
-  d.wind_gust   = ex(/Velocidad de viento \(R[aá]faga\)\s*\|\s*([\d.]+)\s*km\/h/i);
-  d.wind_avg    = ex(/Velocidad de viento\(Prom 10 min\)\s*\|\s*([\d.]+)\s*km\/h/i);
-  d.dew_point   = ex(/Punto de roc[ií]o\s*\|\s*([\d.]+)\s*°C/i);
-  d.heat_index  = ex(/[Íi]ndice de calor\s*\|\s*([\d.]+)\s*°C/i);
-  d.feels_like  = ex(/Sensaci[oó]n t[eé]rmica\s*\|\s*([\d.]+)\s*°C/i);
-  d.apparent_temp = ex(/Temperatura aparente\s*\|\s*([\d.]+)\s*°C/i);
-  const wd = t.match(/Direcci[oó]n del viento\s*\|\s*(\d+)°\s*(\S+)/i);
-  if (wd) { d.wind_dir = parseInt(wd[1]); d.wind_dir_str = wd[2]; }
-  const bf = t.match(/Beaufort\s+F(\d)\s*\|\s*(.+?)(?:\n|\|)/i);
-  if (bf) d.wind_beaufort = `F${bf[1]} ${bf[2].trim()}`;
-  const pt = t.match(/Bar[oó]metro\s*\|[^|]+\|\s*([A-Za-záéíóú ]+)/i);
-  if (pt) d.pres_trend = pt[1].trim().slice(0,30);
-  const upd = t.match(/Condiciones a la hora local:\s*(.+?)(?:\n|$)/i);
-  if (upd) d.updated_str = upd[1].trim();
-  d.online = d.temp !== null;
-  return d;
+// ─── Fetch datos ─────────────────────────────────────────────────────────────
+async function loadData() {
+  setStatus('loading');
+  try {
+    const [stationsRes, alertsRes] = await Promise.all([
+      fetch(`${API}/readings/latest`),
+      fetch(`${API}/alerts`)
+    ]);
+    allReadings = await stationsRes.json();
+    window._alerts = await alertsRes.json();
+    setStatus('ok');
+    const now = new Date();
+    document.getElementById('lastUpdate').textContent =
+      `Actualizado ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')} · datos en tiempo real`;
+    renderSummary();
+    renderStationGrid();
+    if (activeTab === 'mapa') renderMap();
+    if (activeTab === 'comparar') renderCompare();
+    if (activeTab === 'alertas') renderAlerts();
+  } catch(e) {
+    setStatus('error');
+    document.getElementById('lastUpdate').textContent = 'Error al conectar con el backend';
+  }
 }
 
 async function scrapeFromBrowser(url) {
