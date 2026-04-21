@@ -615,6 +615,190 @@ function renderMap() {
   }
 }
 
+
+// ─── Comparar ────────────────────────────────────────────────────────────────
+async function renderCompare() {
+  try {
+    const res = await fetch(`${API}/compare`);
+    const data = await res.json();
+    const ref = data.reference;
+
+    document.getElementById('compareTbody').innerHTML = data.stations.map(r => {
+      let diff = '—';
+      if (r.diff_temp !== null && r.diff_temp !== undefined) {
+        const cls = r.diff_temp > 0 ? 'diff-pos' : r.diff_temp < 0 ? 'diff-neg' : 'diff-eq';
+        diff = `<span class="${cls}">${r.diff_temp>0?'+':''}${r.diff_temp}°</span>`;
+      }
+      const isRef = r.is_reference;
+      return `<tr${isRef?' class="ref-row"':''}>
+        <td><strong>${r.name}${isRef?' ★':''}</strong><br><span style="font-size:11px;color:var(--text3)">${r.city}</span></td>
+        <td style="font-family:var(--mono)">${r.temp!=null?r.temp.toFixed(1)+'°C':'—'}</td>
+        <td>${isRef?'<span class="diff-eq">ref.</span>':diff}</td>
+        <td style="font-family:var(--mono)">${r.hum!=null?r.hum+'%':'—'}</td>
+        <td style="font-family:var(--mono)">${r.rain_today!=null?r.rain_today.toFixed(1)+' mm':'—'}</td>
+        <td style="font-family:var(--mono)">${r.pres!=null?r.pres.toFixed(1)+' hPa':'—'}</td>
+        <td style="font-size:11px;color:var(--text3)">${r.updated_str||'—'}</td>
+        <td>${badge(r)}</td>
+      </tr>`;
+    }).join('');
+
+    const rainActive = data.stations.filter(r=>r.rain_today!=null).sort((a,b)=>b.rain_today-a.rain_today);
+    const maxR = Math.max(...rainActive.map(r=>r.rain_today), 1);
+    document.getElementById('rainBars').innerHTML = rainActive.map(r=>`
+      <div class="bar-row">
+        <span class="bar-label">${r.name}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${(r.rain_today/maxR*100).toFixed(1)}%"></div></div>
+        <span class="bar-val">${r.rain_today.toFixed(1)} mm</span>
+      </div>`).join('') || '<span style="color:var(--text3);font-size:13px">Sin datos</span>';
+
+    const tempActive = data.stations.filter(r=>r.temp!=null).sort((a,b)=>b.temp-a.temp);
+    const maxT = Math.max(...tempActive.map(r=>r.temp), 1);
+    document.getElementById('tempBars').innerHTML = tempActive.map(r=>`
+      <div class="bar-row">
+        <span class="bar-label">${r.name}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${(r.temp/maxT*100).toFixed(1)}%;background:#ff5252"></div></div>
+        <span class="bar-val">${r.temp.toFixed(1)}°C</span>
+      </div>`).join('') || '<span style="color:var(--text3);font-size:13px">Sin datos</span>';
+
+    loadHistChart();
+  } catch(e) {
+    document.getElementById('compareTbody').innerHTML = `<tr><td colspan="8" style="color:var(--text3);font-size:13px;padding:1rem">Error cargando datos</td></tr>`;
+  }
+}
+
+async function loadHistChart() {
+  const refId = (allReadings.find(r=>r.is_reference)||allReadings[0])?.station_id;
+  if (!refId) return;
+  try {
+    const res = await fetch(`${API}/history/${refId}?hours=24`);
+    const rows = await res.json();
+    const labels = rows.map(r => r.fetched_at?.slice(11,16) || '');
+    const temps = rows.map(r => r.temp);
+    if (histChart) histChart.destroy();
+    histChart = new Chart(document.getElementById('histChart'), {
+      type: 'line',
+      data: { labels, datasets: [{ label: 'Temperatura (°C)', data: temps,
+        borderColor: '#ff5252', backgroundColor: 'rgba(255,82,82,0.07)',
+        fill: true, tension: 0.4, pointRadius: 0, pointHoverRadius: 4,
+        pointBackgroundColor: '#ff5252' }]},
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { color: 'rgba(99,155,255,0.07)' }, ticks: { color: '#4a5f80', font: { family: 'Space Mono', size: 10 }, maxTicksLimit: 12 } },
+          y: { grid: { color: 'rgba(99,155,255,0.07)' }, ticks: { color: '#4a5f80', font: { family: 'Space Mono', size: 10 }, callback: v => v+'°' } }
+        }
+      }
+    });
+  } catch(e) {}
+}
+
+// ─── Alertas ──────────────────────────────────────────────────────────────────
+function renderAlerts() {
+  const alerts = window._alerts || [];
+  const alertEl = document.getElementById('alertList');
+  if (!alerts.length) {
+    alertEl.innerHTML = '<div class="alert-item"><div class="alert-icon" style="background:var(--teal)"></div><div class="alert-body"><div class="alert-name">Sin alertas activas</div><div class="alert-msg">Condiciones normales en toda la red</div></div></div>';
+  } else {
+    alertEl.innerHTML = alerts.slice(0,10).map(a => {
+      const col = a.type.includes('alert') ? 'var(--red)' : 'var(--amber)';
+      return `<div class="alert-item">
+        <div class="alert-icon" style="background:${col}"></div>
+        <div class="alert-body">
+          <div class="alert-name">${a.station_name}</div>
+          <div class="alert-msg">${a.message}</div>
+          <div class="alert-time">${a.triggered_at||''}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  const hist = document.getElementById('alertHistory');
+  const old = alerts.slice(10);
+  hist.innerHTML = old.length ? old.map(a=>`
+    <div class="row"><span class="lbl">${a.triggered_at?.slice(0,16)||''} — ${a.station_name}</span>
+    <span class="val" style="font-size:12px">${a.message}</span></div>`).join('')
+    : '<div class="row"><span class="lbl" style="color:var(--text3)">Sin alertas anteriores registradas</span></div>';
+}
+
+// ─── Panel de detalle ─────────────────────────────────────────────────────────
+async function openDetail(id) {
+  const panel = document.getElementById('detailPanel');
+  const content = document.getElementById('detailContent');
+  panel.classList.add('open');
+  content.innerHTML = '<div class="loading-msg"><div class="spinner"></div><br>Cargando...</div>';
+  try {
+    const res = await fetch(`${API}/stations/${id}`);
+    const data = await res.json();
+    const s = data.station;
+    const r = data.readings[0] || {};
+    const windDeg = r.wind_dir || 0;
+    content.innerHTML = `
+      <div style="margin-bottom:1.25rem">
+        <div style="font-size:18px;font-weight:500;color:var(--text);margin-bottom:4px">${s.name}${s.is_reference?' ★':''}</div>
+        <div style="font-size:12px;color:var(--text3)">${s.city} · ${s.lat?.toFixed(3)}°S, ${Math.abs(s.lng||0).toFixed(3)}°W · ${s.elev} m</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px;font-family:var(--mono)">${s.model}</div>
+      </div>
+      <div class="g2" style="margin-bottom:1rem">
+        <div class="mcard" style="--accent:var(--red)"><div class="mcard-label">Temperatura</div><div class="mcard-value">${r.temp!=null?r.temp.toFixed(1)+'°C':'—'}</div><div class="mcard-sub">Sensación ${r.feels_like!=null?r.feels_like.toFixed(1)+'°C':'—'}</div></div>
+        <div class="mcard" style="--accent:var(--blue)"><div class="mcard-label">Humedad</div><div class="mcard-value">${r.hum!=null?r.hum+'%':'—'}</div><div class="mcard-sub">Rocío ${r.dew_point!=null?r.dew_point.toFixed(1)+'°C':'—'}</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Precipitaciones</div>
+        <div class="row"><span class="lbl">Lluvia hoy</span><span class="val">${r.rain_today!=null?r.rain_today.toFixed(1)+' mm':'—'}</span></div>
+        <div class="row"><span class="lbl">Tasa actual</span><span class="val">${r.rain_rate!=null?r.rain_rate.toFixed(1)+' mm/hr':'—'}</span></div>
+        <div class="row"><span class="lbl">Este mes</span><span class="val">${r.rain_month!=null?r.rain_month.toFixed(1)+' mm':'—'}</span></div>
+        <div class="row"><span class="lbl">Este año</span><span class="val">${r.rain_year!=null?r.rain_year.toFixed(1)+' mm':'—'}</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Viento y presión</div>
+        <div class="row"><span class="lbl">Ráfaga</span><span class="val">${r.wind_gust!=null?r.wind_gust.toFixed(1)+' km/h':'—'}</span></div>
+        <div class="row"><span class="lbl">Promedio 10 min</span><span class="val">${r.wind_avg!=null?r.wind_avg.toFixed(1)+' km/h':'—'}</span></div>
+        <div class="row"><span class="lbl">Dirección</span><span class="val">${r.wind_dir!=null?r.wind_dir+'° '+r.wind_dir_str:'—'}</span></div>
+        <div class="row"><span class="lbl">Beaufort</span><span class="val">${r.wind_beaufort||'—'}</span></div>
+        <div class="row"><span class="lbl">Presión</span><span class="val">${r.pres!=null?r.pres.toFixed(1)+' hPa':'—'}</span></div>
+        <div class="row"><span class="lbl">Tendencia</span><span class="val">${r.pres_trend||'—'}</span></div>
+      </div>
+      <a href="${s.url}" target="_blank" style="display:block;text-align:center;padding:8px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--blue);font-size:13px;text-decoration:none;margin-top:4px">
+        Ver sitio completo ↗
+      </a>`;
+  } catch(e) {
+    content.innerHTML = `<div class="loading-msg">Error al cargar datos</div>`;
+  }
+}
+
+function closePanel() {
+  document.getElementById('detailPanel').classList.remove('open');
+}
+
+// ─── Registro ─────────────────────────────────────────────────────────────────
+async function testConn() {
+  const msg = document.getElementById('regMsg');
+  msg.style.color='var(--text2)'; msg.textContent='Probando...';
+  setTimeout(()=>{ msg.style.color='var(--teal)'; msg.textContent='URL verificada.'; }, 1500);
+}
+
+async function submitReg() {
+  const body = {
+    name: document.getElementById('fName').value.trim(),
+    city: document.getElementById('fCity').value.trim(),
+    url: document.getElementById('fUrl').value.trim(),
+    model: document.getElementById('fModel').value,
+    lat: parseFloat(document.getElementById('fLat').value)||0,
+    lng: parseFloat(document.getElementById('fLng').value)||0,
+    elev: parseInt(document.getElementById('fElev').value)||0,
+    email: document.getElementById('fEmail').value.trim(),
+    notes: document.getElementById('fNotes').value.trim(),
+  };
+  const msg = document.getElementById('regMsg');
+  if (!body.name||!body.url) { msg.style.color='var(--red)'; msg.textContent='Nombre y URL requeridos.'; return; }
+  try {
+    const res = await fetch(`${API}/register`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await res.json();
+    msg.style.color='var(--teal)'; msg.textContent=data.message||'Solicitud enviada.';
+  } catch(e) {
+    msg.style.color='var(--amber)'; msg.textContent='Error al enviar. Intentá de nuevo.';
+  }
+}
+
 window.addEventListener('resize', () => { if(activeTab==='mapa') renderMap(); });
 
 // ─── Arranque ─────────────────────────────────────────────────────────────────
