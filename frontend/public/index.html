@@ -299,6 +299,20 @@ textarea { resize: vertical; min-height: 70px; }
       <div class="mcard" style="--accent:var(--blue)"><div class="mcard-label">Lluvia máxima hoy</div><div class="mcard-value" id="sc-rain">—</div><div class="mcard-sub" id="sc-rain-where">—</div></div>
       <div class="mcard" style="--accent:var(--text3)"><div class="mcard-label">Presión promedio</div><div class="mcard-value" id="sc-pres">—</div><div class="mcard-sub">hPa</div></div>
     </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+      <div style="font-size:12px;color:var(--text3)" id="stnCount"></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="hideInactive" onchange="renderStationGrid()" style="width:auto;cursor:pointer">
+          Ocultar sin datos recientes
+        </label>
+        <select id="sortSelect" onchange="renderStationGrid()" style="font-size:12px;padding:4px 8px;width:auto">
+          <option value="name">Ordenar por nombre</option>
+          <option value="temp">Por temperatura</option>
+          <option value="rain">Por lluvia</option>
+        </select>
+      </div>
+    </div>
     <div id="stnGrid" class="stn-grid">
       <div class="loading-msg"><div class="spinner"></div><br>Cargando estaciones...</div>
     </div>
@@ -448,6 +462,16 @@ function goTab(name, btn) {
   if (name === 'alertas') renderAlerts();
 }
 
+// ─── Scraping individual via proxy del backend ───────────────────────────────
+async function scrapeViaProxy(stationId, url) {
+  try {
+    const res = await fetch(`${API}/proxy?url=${encodeURIComponent(url)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.online ? data : null;
+  } catch(e) { return null; }
+}
+
 // ─── Fetch datos ─────────────────────────────────────────────────────────────
 async function loadData() {
   setStatus('loading');
@@ -458,6 +482,7 @@ async function loadData() {
     ]);
     allReadings = await stationsRes.json();
     window._alerts = await alertsRes.json();
+
     setStatus('ok');
     const now = new Date();
     document.getElementById('lastUpdate').textContent =
@@ -467,6 +492,26 @@ async function loadData() {
     if (activeTab === 'mapa') renderMap();
     if (activeTab === 'comparar') renderCompare();
     if (activeTab === 'alertas') renderAlerts();
+
+    // Intentar scraping individual para estaciones sin datos via proxy
+    const sinDatos = allReadings.filter(r => !r.online && r.url);
+    if (sinDatos.length > 0) {
+      const results = await Promise.allSettled(
+        sinDatos.map(r => scrapeViaProxy(r.station_id, r.url))
+      );
+      let actualizado = false;
+      results.forEach((res, i) => {
+        if (res.status === 'fulfilled' && res.value) {
+          const idx = allReadings.findIndex(r => r.station_id === sinDatos[i].station_id);
+          if (idx !== -1) { allReadings[idx] = { ...allReadings[idx], ...res.value }; actualizado = true; }
+        }
+      });
+      if (actualizado) {
+        renderSummary();
+        renderStationGrid();
+        if (activeTab === 'mapa') renderMap();
+      }
+    }
   } catch(e) {
     setStatus('error');
     document.getElementById('lastUpdate').textContent = 'Error al conectar con el backend';
@@ -523,10 +568,39 @@ function badge(r) {
 function renderStationGrid() {
   const grid = document.getElementById('stnGrid');
   if (!allReadings.length) { grid.innerHTML = '<div class="loading-msg">No hay estaciones cargadas.</div>'; return; }
-  grid.innerHTML = allReadings.map(r => `
+
+  const hideInactive = document.getElementById('hideInactive')?.checked;
+  const sortBy = document.getElementById('sortSelect')?.value || 'name';
+
+  let data = [...allReadings];
+
+  // Filtrar inactivas si se pidió
+  if (hideInactive) data = data.filter(r => r.online || (!r.inactive && !r.never_seen));
+
+  // Ordenar
+  if (sortBy === 'temp') data.sort((a,b) => (b.temp??-999) - (a.temp??-999));
+  else if (sortBy === 'rain') data.sort((a,b) => (b.rain_today??-1) - (a.rain_today??-1));
+  else data.sort((a,b) => (b.is_reference||0) - (a.is_reference||0) || a.name.localeCompare(b.name));
+
+  // Actualizar contador
+  const countEl = document.getElementById('stnCount');
+  if (countEl) countEl.textContent = `${data.length} estación${data.length!==1?'es':''} mostradas`;
+
+  grid.innerHTML = data.map(r => {
+    const isOld = r.inactive || r.never_seen;
+    const daysText = r.days_since_online != null
+      ? r.days_since_online === 0 ? 'hoy' : `hace ${r.days_since_online} día${r.days_since_online!==1?'s':''}`
+      : 'nunca';
+    const lastOnlineStr = isOld && !r.online
+      ? `<div style="font-size:10px;color:var(--text3);margin-top:4px">Último dato: ${daysText}</div>`
+      : '';
+    return `
     <div class="stn-card${!r.online?' offline':''}${r.is_reference?' ref-card':''}" onclick="openDetail('${r.station_id}')">
       <div class="stn-card-top">
-        <div><div class="stn-name">${r.name}${r.is_reference?' ★':''}</div><div class="stn-city">${r.city}</div></div>
+        <div>
+          <div class="stn-name">${r.name}${r.is_reference?' ★':''}</div>
+          <div class="stn-city">${r.city}</div>
+        </div>
         ${badge(r)}
       </div>
       <div class="stn-metrics">
@@ -538,8 +612,9 @@ function renderStationGrid() {
         <div class="stn-m"><span>Dir. viento</span><strong>${r.wind_dir_str||'—'}</strong></div>
       </div>
       ${r.updated_str?`<div class="stn-footer">${r.updated_str}</div>`:''}
-    </div>
-  `).join('');
+      ${lastOnlineStr}
+    </div>`;
+  }).join('');
 }
 
 // ─── Mapa canvas ─────────────────────────────────────────────────────────────

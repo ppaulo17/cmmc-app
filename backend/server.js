@@ -377,9 +377,20 @@ app.get('/api/stations/:id', (req, res) => {
 });
 
 // GET /api/readings/latest — última lectura de cada estación activa
+// ?maxDays=N — ocultar estaciones sin datos hace más de N días (default: sin filtro, 0 = mostrar todas)
 app.get('/api/readings/latest', (req, res) => {
+  const maxDays = parseInt(req.query.maxDays) || 0;
+  const dateFilter = maxDays > 0
+    ? `AND r.fetched_at > datetime('now', '-${maxDays} days')`
+    : '';
+
+  // Obtener última lectura con datos reales por estación
   const rows = db.prepare(`
-    SELECT r.*, s.name, s.city, s.lat, s.lng, s.is_reference, s.url, s.model
+    SELECT r.*, s.name, s.city, s.lat, s.lng, s.is_reference, s.url, s.model,
+      (SELECT MAX(r3.fetched_at) FROM readings r3 WHERE r3.station_id = r.station_id AND r3.online = 1) as last_online_at,
+      CAST(julianday('now') - julianday(
+        (SELECT MAX(r3.fetched_at) FROM readings r3 WHERE r3.station_id = r.station_id AND r3.online = 1)
+      ) AS INTEGER) as days_since_online
     FROM readings r
     JOIN stations s ON s.id = r.station_id
     WHERE r.fetched_at = (
@@ -388,7 +399,21 @@ app.get('/api/readings/latest', (req, res) => {
     AND s.active = 1
     ORDER BY s.is_reference DESC, s.name ASC
   `).all();
-  res.json(rows);
+
+  // Agregar estado de actividad
+  const result = rows.map(r => ({
+    ...r,
+    days_since_online: r.days_since_online ?? null,
+    inactive: r.days_since_online !== null && r.days_since_online > 7,
+    never_seen: r.last_online_at === null,
+  }));
+
+  // Aplicar filtro si se pidió
+  const filtered = maxDays > 0
+    ? result.filter(r => !r.never_seen && r.days_since_online !== null && r.days_since_online <= maxDays)
+    : result;
+
+  res.json(filtered);
 });
 
 // GET /api/alerts — alertas activas y recientes
@@ -439,6 +464,28 @@ app.get('/api/compare', (req, res) => {
     diff_pres: ref && row.pres != null && ref.pres != null ? +(row.pres - ref.pres).toFixed(1) : null,
   }));
   res.json({ reference: ref, stations: result });
+});
+
+
+// GET /api/proxy — proxy para scrapear estaciones individuales (evita CORS en el cliente)
+app.get('/api/proxy', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: 'url requerida' });
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000);
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CMMC-Monitor/1.0)' }
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return res.status(response.status).json({ error: `HTTP ${response.status}` });
+    const html = await response.text();
+    const parsed = parseCumulusHTML(html);
+    res.json(parsed);
+  } catch(err) {
+    res.status(500).json({ error: err.message, online: false });
+  }
 });
 
 // POST /api/push-readings — recibir datos scrapeados desde el frontend
